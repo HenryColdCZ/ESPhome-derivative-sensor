@@ -1,7 +1,7 @@
 ...
 ...
 # Počítá derivaci za posledních 24 hodin s periodou 1 minuta.
-#Důležitá funkce je, že hodnoty jsou pamatovány i po výpadku napájení, maximální "ztracené" období je 10 minut což je interval ukládání do flash paměti (viz. flash_write_interval: 10min)
+# Důležitá funkce je, že hodnoty jsou pamatovány i po výpadku napájení, maximální "ztracené" období je 10 minut což je interval ukládání do flash paměti (viz. flash_write_interval: 10min)
 # Používám to pro výpočet průměrné spotřeby plynu za posledních 24 hodin v m3/hodinu. Je to vlastně klouzavý průměr spotřeby 
 # Následně z toho počítám účinnost topení jako poměr z průměrné hodinové spotřeby za posledních 24 hodin a rozdílu mezi vnitřní a venkovní teplotoru.
 #   - Jednotky účinnosti vyjadřuji jako m³/h/°C tedy kubických metrů plynu za hodinu a stupeň celsia
@@ -110,10 +110,6 @@ sensor:
       - clamp:
           min_value: 0
           max_value: 4
-      - sliding_window_moving_average:
-          # Průměrujeme dvě hodnoty
-          window_size: 1
-          send_every: 1
     total:
       name: "Celkovy stav"
       id: CelkovyStav
