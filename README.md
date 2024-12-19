@@ -10,4 +10,11 @@ Následně z toho počítám účinnost topení jako poměr z průměrné hodino
   4byte ve FLASH paměti 
 => Pro ESP8266 to je v pohodě, i takto je využití RAM jen na 50%
 
+# Prostor pro zlepšení
+Alternativně by to šlo dělat pomocí globals float pole hodnot s nastaveným restore
+U ESP8266 je flash pamět omezena na 96 byte, tedy max. 24 float hodnot. Byli bysme zde tedy omezeni intervalem jednou za hodinu
+popř. by šlo float změnit na int16_t a počet lokací zvojnásobit nebo dokonce na uint8_t a počet lokací zčtyřnásobit
+Ale u uint8_t bysme už nemohli ukládata absolutní hodnotu počítadla, ale jen inkrement. 
+Ten by pak byl omezen na maximálně 2,55m³ (int8 může nabývat hostnot 0-255) což by mohlo plně stačit
+
 # Vytvořeno ve spolupráci s ChatGPT
