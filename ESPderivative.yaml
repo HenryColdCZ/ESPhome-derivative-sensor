@@ -1,0 +1,178 @@
+...
+...
+# Počítá derivaci za posledních 24 hodin s periodou 1 minuta.
+#Důležitá funkce je, že hodnoty jsou pamatovány i po výpadku napájení, maximální "ztracené" období je 10 minut což je interval ukládání do flash paměti (viz. flash_write_interval: 10min)
+# Používám to pro výpočet průměrné spotřeby plynu za posledních 24 hodin v m3/hodinu. Je to vlastně klouzavý průměr spotřeby 
+# Následně z toho počítám účinnost topení jako poměr z průměrné hodinové spotřeby za posledních 24 hodin a rozdílu mezi vnitřní a venkovní teplotoru.
+#   - Jednotky účinnosti vyjadřuji jako m³/h/°C tedy kubických metrů plynu za hodinu a stupeň celsia
+#   - Na vzorku dat za poslední 3 týdny se pohybuji mezi 0,016-0,020m³/h/°C
+
+# Náročnost na hardware
+#   4x1440byte v RAM paměti (4byte na každý float) 
+#   4byte ve FLASH paměti 
+# => Pro ESP8266 to je v pohodě, i takto je využití RAM jen na 50%
+
+# Vytvořeno ve spolupráci s ChatGPT
+
+esphome:
+  name: plynomer
+  friendly_name: Plynoměr
+  project:
+    name: "Jindřich Chládek & CodexAI.Sledování plynoměru"
+    version: "6.10.2024"
+    
+# on_boot
+# => Zajišťuje aby byla po zapnutí načtena poslední hodnota senzoru a poslední vypočtená hodnota derivace
+#    Tímto je zajištěno, že i po restartu nebo výpadku napájení je ihned načtena poslední průměrná hodnota a počítá se sní, jako by hodnota senzoru narůstala lineárně po celých 24 hodin
+
+#    Alternativně by to šlo dělat pomocí globals float pole hodnot s nastaveným restore
+#    U ESP8266 je flash pamět omezena na 96 byte, tedy max. 24 float hodnot. Byli bysme zde tedy omezeni intervalem jednou za hodinu
+#    popř. by šlo float změnit na int16_t a počet lokací zvojnásobit nebo dokonce na uint8_t a počet lokací zčtyřnásobit
+#    Ale u uint8_t bysme už nemohli ukládata absolutní hodnotu počítadla, ale jen inkrement. 
+#        Ten by pak byl omezen na maximálně 2,55m³ (int8 může nabývat hostnot 0-255) což by mohlo plně stačit
+
+  on_boot:
+    priority: 600
+    then:
+      - pulse_meter.set_total_pulses:
+          id: PrutokZaHodinu
+          value: !lambda "return id(CelkovyStavRestore);"
+      - number.set:
+          id: StavPocitadlaSync
+          value: !lambda "return id(CelkovyStavRestore) / 100;"
+      # Prodleva 20 vteřin než bude vše načteno
+      - delay: 20s
+      - lambda: |-
+          // Načti poslední hodnotu derivace při startu
+          if (id(last_derivative) != 0.0) {
+             // Naplň pole hodnotami vypočítanými podle last_derivative
+            float increment = id(last_derivative) / 1440.0;  // Rozděl derivaci na 1440 částí
+            float current_value = id(CelkovyStav).state;  // Začínáme od aktuální hodnoty senzoru
+          
+            // Začít plnit pole od 1440 (index 1439) a jít až do 0
+            for (int i = 1439; i >= 0; i--) {
+             // Přičítáme derivaci k aktuální hodnotě senzoru
+              id(history)[i] = current_value - (increment * (1439 - i));  // Správně přičítáme hodnoty zpětně
+            }
+            // Nastav history_count na 1440, protože historie je nyní plná
+            
+            id(history_count) = 1440;
+            id(current_index) = 1439;  // Nastav aktuální index na poslední hodnotu v poli
+          }
+
+esp8266:
+  board: esp01_1m
+  restore_from_flash: True
+
+preferences:
+  flash_write_interval: 10min
+  
+globals:
+   - id: CelkovyStavRestore
+     type: float
+     restore_value: yes
+
+   - id: last_derivative
+     type: float
+     initial_value: "0.0"
+     restore_value: true  # Uchová hodnotu v paměti Flash
+
+   - id: current_index
+     type: int
+     initial_value: "0"
+
+   - id: history
+     type: int[1440]  # Pole pro 1440 hodnot (24 hodin, každá minuta)
+
+   - id: history_count
+     type: int
+     initial_value: "0"  # Počet uložených hodnot v historii
+     
+sensor:
+  - platform: pulse_meter
+    pin: 
+      number: 2
+      inverted: True
+      mode:
+        input: true
+        pullup: true
+    id: PrutokZaHodinu
+    device_class: gas
+    state_class: measurement
+    name: "Prutok za hodinu"
+    unit_of_measurement: 'm³/h'
+    accuracy_decimals: 2
+    timeout: 2min
+    internal_filter: 100ms
+    internal_filter_mode: PULSE
+    filters:
+      - multiply: 0.6
+      - clamp:
+          min_value: 0
+          max_value: 4
+      - sliding_window_moving_average:
+          # Průměrujeme dvě hodnoty
+          window_size: 1
+          send_every: 1
+    total:
+      name: "Celkovy stav"
+      id: CelkovyStav
+      device_class: gas
+      state_class: total_increasing
+      unit_of_measurement: 'm³'
+      accuracy_decimals: 2
+      filters:
+        - multiply: 0.01
+        - lambda: |-
+            id(CelkovyStavRestore) = id(CelkovyStav).raw_state;
+            return x;
+
+  - platform: uptime
+    id: CasOdZapnuti
+    name: "Cas od zapnuti nebo restartu"
+
+  - platform: template
+    name: "24hodinový rozdíl"
+    unit_of_measurement: 'm³/h'
+    accuracy_decimals: 6
+    device_class: gas
+    state_class: measurement
+    lambda: |-
+      if (id(history_count) < 1440) {
+        return id(last_derivative) / 24;  // Vrátí postupnou derivaci
+      } else {
+        int oldest_index = (id(current_index) + 1) % 1440;
+        float oldest_value = id(history)[oldest_index];
+        if (!isnan(id(CelkovyStav).state) && !isnan(oldest_value)) {
+          return (id(CelkovyStav).state - oldest_value) / 24;
+        } else {
+          return NAN;
+        }
+      }
+
+interval:
+  - interval: 1min
+    then:
+      - lambda: |-
+          float current_value = id(CelkovyStav).state;
+          if (!isnan(current_value)) {
+            // Ulož aktuální hodnotu do kruhového bufferu
+            id(history)[id(current_index)] = current_value;
+
+            // Posuň index
+            id(current_index) = (id(current_index) + 1) % 1440;
+
+            // Aktualizuj počet hodnot v historii
+            if (id(history_count) < 1440) {
+              id(history_count)++;
+            }
+
+            // Přepočítej derivaci, pokud je historie kompletní
+            if (id(history_count) == 1440) {
+              int oldest_index = (id(current_index) + 1) % 1440;
+              float oldest_value = id(history)[oldest_index];
+              if (!isnan(oldest_value)) {
+                id(last_derivative) = (current_value - oldest_value) / 24;
+              }
+            }
+          }
